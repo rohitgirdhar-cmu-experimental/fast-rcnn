@@ -104,7 +104,7 @@ def demo(net, image_name, classes):
         dets = dets[keep, :]
         print 'All {} detections with p({} | box) >= {:.1f}'.format(cls, cls,
                                                                     CONF_THRESH)
-        vis_detections(im, cls, dets, thresh=CONF_THRESH)
+        #vis_detections(im, cls, dets, thresh=CONF_THRESH)
 
 def parse_args():
     """Parse input arguments."""
