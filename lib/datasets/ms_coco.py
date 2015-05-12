@@ -5,8 +5,8 @@
 # Written by Ross Girshick
 # --------------------------------------------------------
 
-import datasets
-import datasets.pascal_voc
+import datasets, math
+import datasets.ms_coco
 import os
 import datasets.imdb
 import xml.dom.minidom as minidom
@@ -22,15 +22,16 @@ class ms_coco(datasets.imdb):
         datasets.imdb.__init__(self, 'coco_' + image_set + year)
         self._year = year
         self._image_set = image_set
-        self._coco_name = self.name
+        self._coco_name = image_set + year
         self._coco_path = self._get_default_path() if coco_path is None \
                             else coco_path
         self._COCO = self._load_coco_json()
 
-        cats = self._COCO.loadCats(coco.getCatIds())
+        cats = self._COCO.loadCats(self._COCO.getCatIds())
         self._classes = tuple(['__background__'] + [cat['name'] for cat in cats])
         self._class_to_ind = dict(zip(self.classes, xrange(self.num_classes)))
         self._image_index = self._load_image_set_index()
+        self._validate_image_index()
         # Default to roidb handler
         self._roidb_handler = self.selective_search_roidb
 
@@ -39,6 +40,18 @@ class ms_coco(datasets.imdb):
 
         assert os.path.exists(self._coco_path), \
                 'VOCdevkit path does not exist: {}'.format(self._coco_path)
+
+    def _validate_image_index(self):
+        # training requirs at least one object in the image, remove those without
+        if int(self._year) == 2007 or self._image_set != 'test':
+            roidb = self.gt_roidb(False) #disable caching, because we are going to rebuild index
+
+            image_index = []
+            for rois, index in zip(roidb, self._image_index):
+                if rois['gt_overlaps'].size != 0:
+                    image_index.append(index)
+            self._image_index = image_index
+
 
     def image_path_at(self, i):
         """
@@ -53,7 +66,7 @@ class ms_coco(datasets.imdb):
         """
         Construct an image path from the image's "index" identifier.
         """
-        image_path = os.path.join(self._coco_path, self._coco_name, self._get_image_filename(index))
+        image_path = os.path.join(self._coco_path, 'images', self._coco_name, self._get_image_filename(index))
         assert os.path.exists(image_path), \
                 'Path does not exist: {}'.format(image_path)
         return image_path
@@ -69,7 +82,7 @@ class ms_coco(datasets.imdb):
 
     def _load_coco_json(self):
         import sys
-        sys.append(os.path.join(self._coco_path, 'PythonAPI'))
+        sys.path.append(os.path.join(self._coco_path, 'PythonAPI'))
         try:
             from pycocotools.coco import COCO
         except:
@@ -84,14 +97,14 @@ class ms_coco(datasets.imdb):
         """
         return os.path.join(datasets.ROOT_DIR, 'data', 'coco')
 
-    def gt_roidb(self):
+    def gt_roidb(self, caching = True):
         """
         Return the database of ground-truth regions of interest.
 
         This function loads/saves from/to a cache file to speed up future calls.
         """
         cache_file = os.path.join(self.cache_path, self.name + '_gt_roidb.pkl')
-        if os.path.exists(cache_file):
+        if caching and os.path.exists(cache_file):
             with open(cache_file, 'rb') as fid:
                 roidb = cPickle.load(fid)
             print '{} gt roidb loaded from {}'.format(self.name, cache_file)
@@ -99,9 +112,11 @@ class ms_coco(datasets.imdb):
 
         gt_roidb = [self._load_coco_annotation(index)
                     for index in self.image_index]
-        with open(cache_file, 'wb') as fid:
-            cPickle.dump(gt_roidb, fid, cPickle.HIGHEST_PROTOCOL)
-        print 'wrote gt roidb to {}'.format(cache_file)
+
+        if caching:
+            with open(cache_file, 'wb') as fid:
+                cPickle.dump(gt_roidb, fid, cPickle.HIGHEST_PROTOCOL)
+            print 'wrote gt roidb to {}'.format(cache_file)
 
         return gt_roidb
 
@@ -139,13 +154,11 @@ class ms_coco(datasets.imdb):
                                                 self.name + '.mat'))
         assert os.path.exists(filename), \
                'Selective search data not found at: {}'.format(filename)
-        ss_data = sio.loadmat(filename)
-        raw_data = ss_data['boxes'].ravel()
-        images = ss_data['images'].ravel()
+        images, boxes = self._load_v73_ss_boxes(filename)
 
         box_dict = {}
-        for i in xrange(raw_data.shape[0]):
-            box_dict[images[i].tolist()] = raw_data[i][:, (1, 0, 3, 2)] - 1
+        for img, box_tmp in zip(images, boxes):
+            box_dict[img] = box_tmp[:, (1, 0, 3, 2)] - 1
 
         box_list = []
         for index in self._image_index:
@@ -153,6 +166,34 @@ class ms_coco(datasets.imdb):
             box_list.append(box_dict[file_name])
 
         return self.create_roidb_from_box_list(box_list, gt_roidb)
+
+    #http://stackoverflow.com/a/28259682
+    #ss file is saved by matlab with -v7.3
+    #two variables: boxes and images
+    # images: cell array of filenames
+    # boxes: cell array of boxes:
+    #   each cell is a n_boxes * 4 (y1,x1,y2,x2 in Selective Search Code) matrix
+    def _load_v73_ss_boxes(self, path):
+        import h5py
+
+        with h5py.File(path) as reader:
+
+            images = []
+            for column in reader['images']:
+                row_data = []
+                for row_number in range(len(column)):
+                    row_data.append(''.join(map(unichr, reader[column[row_number]][:])))
+                images.append(row_data[0])
+
+            boxes = []
+            for column in reader['boxes']:
+                row_data = []
+                for row_number in range(len(column)):
+                    box_tmp = reader[column[row_number]][:]
+                    row_data.append(np.transpose(box_tmp))
+                boxes = row_data
+
+        return images, boxes
 
     def selective_search_IJCV_roidb(self):
         """
@@ -201,9 +242,10 @@ class ms_coco(datasets.imdb):
         Load image and bounding boxes info from XML file in the PASCAL VOC
         format.
         """
-        annIds = coco.getAnnIds(imgIds=index, iscrowd=None)
-        anns = coco.loadAnns(annIds)
-        num_objs = len(anns)
+        annIds = self._COCO.getAnnIds(imgIds=index, iscrowd=None)
+        objs = self._COCO.loadAnns(annIds)
+        objs = [obj for obj in objs if obj['area'] > 0]
+        num_objs = len(objs)
 
         boxes = np.zeros((num_objs, 4), dtype=np.uint16)
         gt_classes = np.zeros((num_objs), dtype=np.int32)
@@ -212,11 +254,11 @@ class ms_coco(datasets.imdb):
         # Load object bounding boxes into a data frame.
         for ix, obj in enumerate(objs):
             # Make pixel indexes 0-based
-            x1 = obj['bbox'][0]
-            y1 = obj['bbox'][1]
-            x2 = obj['bbox'][0] + obj['bbox'][2] - 1
-            y2 = obj['bbox'][1] + obj['bbox'][3] - 1
-            cls = self._class_to_ind[self._COCO.loadCats(obj['category_id'])]
+            x1 = round(obj['bbox'][0])
+            y1 = round(obj['bbox'][1])
+            x2 = x1 + math.ceil(obj['bbox'][2]) - 1
+            y2 = y1 + math.ceil(obj['bbox'][3]) - 1
+            cls = self._class_to_ind[self._COCO.loadCats(obj['category_id'])[0]['name']]
             boxes[ix, :] = [x1, y1, x2, y2]
             gt_classes[ix] = cls
             overlaps[ix, cls] = 1.0
@@ -283,6 +325,6 @@ class ms_coco(datasets.imdb):
             self.config['cleanup'] = True
 
 if __name__ == '__main__':
-    d = datasets.pascal_voc('trainval', '2007')
+    d = datasets.ms_coco('val', '2014')
     res = d.roidb
     from IPython import embed; embed()
