@@ -49,6 +49,11 @@ If you find Fast R-CNN useful in your research, please consider citing:
 
   You can download my [Makefile.config](http://www.cs.berkeley.edu/~rbg/fast-rcnn-data/Makefile.config) for reference.
 2. Python packages you might not have: `cython`, `python-opencv`, `easydict`
+  
+  ```bash
+  $ conda install opencv
+  $ conda install -c https://conda.binstar.org/auto easydict
+  ```
 3. [optional] MATLAB (required for PASCAL VOC evaluation only)
 
 ### Requirements: hardware
