@@ -158,11 +158,12 @@ class ms_coco(datasets.imdb):
 
         box_dict = {}
         for img, box_tmp in zip(images, boxes):
-            box_dict[img] = box_tmp[:, (1, 0, 3, 2)] - 1
+            box_dict[img] = box_tmp[0][:, (1, 0, 3, 2)] - 1
 
         box_list = []
         for index in self._image_index:
-            file_name = self._get_image_filename(index)
+            # get rid of .jpg as the matlab images list doesn't contain that
+            file_name = self._get_image_filename(index)[:-4]
             box_list.append(box_dict[file_name])
 
         return self.create_roidb_from_box_list(box_list, gt_roidb)
@@ -191,7 +192,7 @@ class ms_coco(datasets.imdb):
                 for row_number in range(len(column)):
                     box_tmp = reader[column[row_number]][:]
                     row_data.append(np.transpose(box_tmp))
-                boxes = row_data
+                boxes.append(row_data)
 
         return images, boxes
 
